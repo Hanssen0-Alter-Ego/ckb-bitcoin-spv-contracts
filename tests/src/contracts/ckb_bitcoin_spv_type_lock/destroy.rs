@@ -1,6 +1,12 @@
 use ckb_bitcoin_spv_verifier::types::{core, packed, prelude::Pack as VPack};
 use ckb_testtool::{
-    ckb_types::{bytes::Bytes, core::TransactionBuilder, packed::*, prelude::*},
+    ckb_script::{ScriptError, TransactionScriptError},
+    ckb_types::{
+        bytes::Bytes,
+        core::{TransactionBuilder, TransactionView},
+        packed::*,
+        prelude::*,
+    },
     context::Context,
 };
 
@@ -41,6 +47,13 @@ struct NormalCase {
 }
 
 fn test_normal(case: NormalCase) {
+    with_transaction(case, |context, tx| {
+        let _ = context.should_be_passed(tx, MAX_CYCLES);
+    });
+}
+
+// Reuse the existing valid transaction for focused single-field mutations.
+fn with_transaction(case: NormalCase, mut check: impl FnMut(&Context, &TransactionView)) {
     utilities::setup();
 
     let loader = Loader::default();
@@ -118,5 +131,35 @@ fn test_normal(case: NormalCase) {
         .build();
     let tx = context.complete_tx(tx);
 
-    let _ = context.should_be_passed(&tx, MAX_CYCLES);
+    check(&context, &tx);
+}
+
+fn assert_type_error(context: &Context, tx: &TransactionView, code: i8) {
+    let (cell, _) = context
+        .get_cell(&tx.inputs().get(0).unwrap().previous_output())
+        .unwrap();
+    let script = cell.type_().to_opt().unwrap();
+    let expected = ScriptError::validation_failure(&script, code).input_type_script(0);
+    let actual = context
+        .verify_tx(tx, MAX_CYCLES)
+        .expect_err("mutated state transition must fail");
+    assert_eq!(
+        actual.root_cause().downcast_ref::<TransactionScriptError>(),
+        Some(&expected)
+    );
+}
+
+#[test]
+fn rejects_partial_instance_destruction() {
+    with_transaction(NormalCase { clients_count: 3 }, |context, tx| {
+        context
+            .verify_tx(tx, MAX_CYCLES)
+            .expect("complete destruction succeeds");
+        let inputs: Vec<_> = tx.inputs().into_iter().take(3).collect();
+        assert_type_error(
+            context,
+            &tx.as_advanced_builder().set_inputs(inputs).build(),
+            0x2f, // DestroyNotEnoughCells
+        );
+    });
 }

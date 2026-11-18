@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [ master, production, develop, release/* ]
+    branches: [ master, production, develop, release/*, test/* ]
   pull_request:
     branches: [ master, production, release/* ]
 defaults:
@@ -22,7 +22,7 @@ jobs:
           rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --profile minimal --component rustfmt
           rustup override set ${{ env.RUST_TOOLCHAIN }}
       - name: Format Check
-        run: make fmt
+        run: cargo fmt --all -- --check
   clippy:
     name: Checks / Clippy
     runs-on: ubuntu-latest
@@ -41,7 +41,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ ubuntu-latest, macos-latest, windows-2019 ]
+        os: [ ubuntu-latest, macos-latest, windows-2022 ]
       fail-fast: true
       max-parallel: 3
     steps:
@@ -60,7 +60,7 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: brew install llvm@16
       - name: Install LLVM on Windows
-        if: matrix.os == 'windows-2019'
+        if: matrix.os == 'windows-2022'
         shell: pwsh
         run: |
           iex "& {$(irm get.scoop.sh)} -RunAsAdmin"

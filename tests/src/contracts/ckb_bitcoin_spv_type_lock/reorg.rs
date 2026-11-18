@@ -3,9 +3,10 @@ use std::{cmp::Ordering, mem};
 use ckb_bitcoin_spv_prover::DummyService;
 use ckb_bitcoin_spv_verifier::types::{core, packed, prelude::Pack as VPack};
 use ckb_testtool::{
+    ckb_script::{ScriptError, TransactionScriptError},
     ckb_types::{
         bytes::Bytes,
-        core::{DepType, TransactionBuilder},
+        core::{DepType, TransactionBuilder, TransactionView},
         packed::*,
         prelude::*,
     },
@@ -50,6 +51,13 @@ struct NormalCase<'a> {
 }
 
 fn test_normal(case: NormalCase) {
+    with_transaction(case, |context, tx| {
+        let _ = context.should_be_passed(tx, MAX_CYCLES);
+    });
+}
+
+// Reuse the existing valid transaction for focused single-field mutations.
+fn with_transaction(case: NormalCase, mut check: impl FnMut(&Context, &TransactionView)) {
     utilities::setup();
 
     let mut header_bins_iter = {
@@ -308,5 +316,100 @@ fn test_normal(case: NormalCase) {
         .build();
     let tx = context.complete_tx(tx);
 
-    let _ = context.should_be_passed(&tx, MAX_CYCLES);
+    check(&context, &tx);
+}
+
+fn assert_type_error(context: &Context, tx: &TransactionView, code: i8) {
+    let (cell, _) = context
+        .get_cell(&tx.inputs().get(0).unwrap().previous_output())
+        .unwrap();
+    let script = cell.type_().to_opt().unwrap();
+    let expected = ScriptError::validation_failure(&script, code).input_type_script(0);
+    let actual = context
+        .verify_tx(tx, MAX_CYCLES)
+        .expect_err("mutated state transition must fail");
+    assert_eq!(
+        actual.root_cause().downcast_ref::<TransactionScriptError>(),
+        Some(&expected)
+    );
+}
+
+#[test]
+fn rejects_inconsistent_reorg_outputs_and_missing_fork() {
+    with_transaction(
+        NormalCase {
+            headers_path: "case-0822528_0830592",
+            start_height: 822528,
+            stale_height: 823226,
+            clients_count: 5,
+            stale_client_id: 1,
+            reorg_clients_count: 3,
+        },
+        |context, tx| {
+            context
+                .verify_tx(tx, MAX_CYCLES)
+                .expect("unmodified reorg succeeds");
+            let mut data: Vec<_> = tx.outputs_data().into_iter().collect();
+            data[1] = Pack::pack(&Bytes::from_static(b"bad client"));
+            assert_type_error(
+                context,
+                &tx.as_advanced_builder().set_outputs_data(data).build(),
+                0x48, // ReorgOutputMalformed
+            );
+            let mut data: Vec<_> = tx.outputs_data().into_iter().collect();
+            data[2] = data[0].clone();
+            assert_type_error(
+                context,
+                &tx.as_advanced_builder().set_outputs_data(data).build(),
+                0x4a, // ReorgOutputInfoDuplicated
+            );
+            let mut data: Vec<_> = tx.outputs_data().into_iter().collect();
+            data[2] = data[1].clone();
+            assert_type_error(
+                context,
+                &tx.as_advanced_builder().set_outputs_data(data).build(),
+                0x4c, // ReorgOutputClientIdsIsMismatch
+            );
+            let mut data: Vec<_> = tx.outputs_data().into_iter().collect();
+            let client = packed::SpvClient::from_slice(&data[2].raw_data()).unwrap();
+            data[2] = client
+                .as_builder()
+                .tip_block_hash(Default::default())
+                .build()
+                .as_slice()
+                .pack();
+            assert_type_error(
+                context,
+                &tx.as_advanced_builder().set_outputs_data(data).build(),
+                0x4d, // ReorgNewClientIsIncorrect
+            );
+            // Reorg must increase accumulated work, not merely present a well-shaped client set.
+            let (_, stale_data) = context
+                .get_cell(&tx.inputs().get(1).unwrap().previous_output())
+                .unwrap();
+            let stale = packed::SpvClient::from_slice(&stale_data).unwrap();
+            let mut data: Vec<_> = tx.outputs_data().into_iter().collect();
+            for entry in data.iter_mut().skip(1) {
+                let current = packed::SpvClient::from_slice(&entry.raw_data()).unwrap();
+                *entry = stale
+                    .clone()
+                    .as_builder()
+                    .id(current.id())
+                    .build()
+                    .as_slice()
+                    .pack();
+            }
+            assert_type_error(
+                context,
+                &tx.as_advanced_builder().set_outputs_data(data).build(),
+                0x40, // ReorgNotBetterChain
+            );
+            let deps: Vec<_> = tx.cell_deps().into_iter().skip(1).collect();
+            assert_type_error(
+                context,
+                &tx.as_advanced_builder().set_cell_deps(deps).build(),
+                0x4f, // ReorgCellDepNotFound
+            );
+        },
+    );
 }

@@ -3,9 +3,10 @@ use std::{cmp::Ordering, mem};
 use ckb_bitcoin_spv_prover::DummyService;
 use ckb_bitcoin_spv_verifier::types::{core, packed, prelude::Pack as VPack};
 use ckb_testtool::{
+    ckb_script::{ScriptError, TransactionScriptError},
     ckb_types::{
         bytes::Bytes,
-        core::{DepType, TransactionBuilder},
+        core::{DepType, TransactionBuilder, TransactionView},
         packed::*,
         prelude::*,
     },
@@ -66,6 +67,14 @@ struct NormalCase<'a> {
 }
 
 fn test_normal(case: NormalCase) {
+    with_transaction(case, |context, tx| {
+        let _ = context.should_be_passed(tx, MAX_CYCLES);
+        false
+    });
+}
+
+// Returning true stops after one valid transition for focused mutations.
+fn with_transaction(case: NormalCase, mut check: impl FnMut(&Context, &TransactionView) -> bool) {
     utilities::setup();
 
     let mut header_bins_iter = {
@@ -143,6 +152,7 @@ fn test_normal(case: NormalCase) {
 
     let mut tip_client_id: u8 = 0;
     let mut headers = Vec::new();
+    let mut checked_transitions = 0;
     for header_bin in header_bins_iter {
         let header: core::Header = utilities::decode_from_bin_file(&header_bin).unwrap();
         let height: u32 = header_bin
@@ -239,6 +249,98 @@ fn test_normal(case: NormalCase) {
             .build();
         let tx = context.complete_tx(tx);
 
-        let _ = context.should_be_passed(&tx, MAX_CYCLES);
+        checked_transitions += 1;
+        if check(&context, &tx) {
+            break;
+        }
     }
+    assert!(
+        checked_transitions > 0,
+        "fixture must produce at least one checked update transition"
+    );
+}
+
+fn assert_type_error(context: &Context, tx: &TransactionView, code: i8) {
+    let (cell, _) = context
+        .get_cell(&tx.inputs().get(0).unwrap().previous_output())
+        .unwrap();
+    let script = cell.type_().to_opt().unwrap();
+    let expected = ScriptError::validation_failure(&script, code).input_type_script(0);
+    let actual = context
+        .verify_tx(tx, MAX_CYCLES)
+        .expect_err("mutated state transition must fail");
+    assert_eq!(
+        actual.root_cause().downcast_ref::<TransactionScriptError>(),
+        Some(&expected)
+    );
+}
+
+#[test]
+fn rejects_invalid_update_state_and_proof_envelope() {
+    with_transaction(
+        NormalCase {
+            headers_path: "case-0822528_0830592",
+            height: 828576,
+            clients_count: 3,
+            headers_group_size: 1,
+        },
+        |context, tx| {
+            context
+                .verify_tx(tx, MAX_CYCLES)
+                .expect("unmodified update succeeds");
+            let mut data: Vec<_> = tx.outputs_data().into_iter().collect();
+            data[0] = packed::SpvInfo::new_builder().build().as_slice().pack();
+            assert_type_error(
+                context,
+                &tx.as_advanced_builder().set_outputs_data(data).build(),
+                0x35, // UpdateOutputInfoChanged
+            );
+            let deps: Vec<_> = tx.cell_deps().into_iter().skip(1).collect();
+            assert_type_error(
+                context,
+                &tx.as_advanced_builder().set_cell_deps(deps).build(),
+                0x37, // UpdateCellDepNotFound
+            );
+            let witness = WitnessArgs::new_builder().build().as_bytes();
+            assert_type_error(
+                context,
+                &tx.as_advanced_builder()
+                    .set_witnesses(vec![Pack::pack(&witness)])
+                    .build(),
+                0x3a, // UpdateWitnessIsNotExisted
+            );
+            let witness = WitnessArgs::new_builder()
+                .output_type(Some(Bytes::from_static(b"bad")).pack())
+                .build()
+                .as_bytes();
+            assert_type_error(
+                context,
+                &tx.as_advanced_builder()
+                    .set_witnesses(vec![Pack::pack(&witness)])
+                    .build(),
+                0x04, // Encoding
+            );
+            let mut data: Vec<_> = tx.outputs_data().into_iter().collect();
+            data[1] = Pack::pack(&Bytes::from_static(b"bad client"));
+            assert_type_error(
+                context,
+                &tx.as_advanced_builder().set_outputs_data(data).build(),
+                0x34, // UpdateOutputClientNotFound
+            );
+            let mut data: Vec<_> = tx.outputs_data().into_iter().collect();
+            let client = packed::SpvClient::from_slice(&data[1].raw_data()).unwrap();
+            data[1] = client
+                .as_builder()
+                .tip_block_hash(Default::default())
+                .build()
+                .as_slice()
+                .pack();
+            assert_type_error(
+                context,
+                &tx.as_advanced_builder().set_outputs_data(data).build(),
+                0x60 + ckb_bitcoin_spv_verifier::error::UpdateError::ClientTipBlockHash as i8,
+            );
+            true
+        },
+    );
 }

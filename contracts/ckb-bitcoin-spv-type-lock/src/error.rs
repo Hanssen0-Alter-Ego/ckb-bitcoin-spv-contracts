@@ -28,8 +28,7 @@ pub enum InternalError {
     CreateBadClientCellData,
     CreateNewClientIsIncorrect,
 
-    // 0x2f: Errors when destroy.
-    DestroyNotEnoughCells = 0x2f,
+    // 0x2f is reserved (formerly used by Destroy).
 
     // 0x30 ~ 0x3f: Errors when update.
     UpdateInputInfoNotFound = 0x30,

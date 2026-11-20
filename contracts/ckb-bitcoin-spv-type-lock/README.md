@@ -5,7 +5,7 @@ A type script designed for Bitcoin SPV clients ensures the valid synchronization
 
 ## Brief Introduction
 
-A Bitcoin  SPV on CKB consists of cells that are managed by the CKB Bitcoin SPV Type Script and identified by the script args. The number of live cells with the script args remains fixed once created, and these cells will be destroyed collectively as a group.
+A Bitcoin  SPV on CKB consists of cells that are managed by the CKB Bitcoin SPV Type Script and identified by the script args. The number of live cells with the script args remains fixed once created. Destroy is not supported.
 
 ### Cells
 
@@ -58,7 +58,7 @@ A Bitcoin SPV instance contains two types of cells: **SPV info cell** and **SPV 
 
 ### Operations
 
-There are 4 kinds of operations in the Bitcoin SPV type script:
+The Bitcoin SPV type script supports Create, Update, and Reorg. The existing full-set Reset is available only on Bitcoin Testnet3.
 
 - **Create**
 
@@ -86,33 +86,6 @@ There are 4 kinds of operations in the Bitcoin SPV type script:
   - ... ...
   Witnesses:
   - SPV Bootstrap
-  - ... ...
-  ```
-
-- **Destroy**
-
-  Cells within a single Bitcoin SPV instance should be destroyed in one transaction..
-
-  The structure of this kind of transaction is as follows:
-
-  ```yaml
-  Cell Deps:
-  - Type Lock
-  - ... ...
-  Inputs:
-  - SPV Info (tip_client_id=0)
-  - SPV Client (id=0)
-  - SPV Client (id=1)
-  - SPV Client (id=2)
-  - ... ...
-  - SPV Client (id=n-2)
-  - SPV Client (id=n-1)
-  - ... ...
-  Outputs:
-  - Unrelated Cell
-  - ... ...
-  Witnesses:
-  - Unrelated Witness
   - ... ...
   ```
 
@@ -182,7 +155,7 @@ There are 4 kinds of operations in the Bitcoin SPV type script:
   - ... ...
   ```
 
-For all operations, the witness for Bitcoin SPV should be set at the same
+For Create, Update, and Reorg, the witness for Bitcoin SPV should be set at the same
 index of the output SPV info cell, and the proof should be set in
 [the field `output_type` of `WitnessArgs`].
 

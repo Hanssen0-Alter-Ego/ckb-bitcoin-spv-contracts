@@ -1,2 +1,2 @@
 6bbea4820329050e1fc65f9c15cab5948b824c73aa3430d7d92b793c53ca66b6  build/release/can-update-without-ownership-lock
-8e0eae92ae9107b6e98c2a39a68e99877825c7d56e6e7c0f769959b861d98fce  build/release/ckb-bitcoin-spv-type-lock
+abe3a462d2e0eeef8ea474c93cdbd1d67217e870799caf41bf9549475171a691  build/release/ckb-bitcoin-spv-type-lock
